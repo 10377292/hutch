@@ -352,13 +352,8 @@ void MixedFERegression<InputHandler,Integrator,ORDER>::smoothLaplace()
 	ETStiff stiff(EStiff);
 
 
-
-
-	if(!regressionData_.isLocationsByNodes())
- 	{
- 		//std::cout<<"HERE";
- 		setPsi();
- 	}
+	setPsi();
+ 	
  
  	if(!regressionData_.getCovariates().rows() == 0)
  	{
