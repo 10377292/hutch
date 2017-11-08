@@ -1,0 +1,33 @@
+R DEPENDENCIES
+
+This package depends on the following R packages, which should be installed
+before the installation of fdaPDE2:
+- stats
+- rgl
+- grDevices
+- graphics
+- Rmpi
+- RcppEigen
+To check if these packages are installed it is useful to invoke the function
+library() from an R session. If they are not, they can be installed with the 
+function install.packages() from within an R session or with the command
+R CMD INSTALL from the shell.
+
+LIBRARIES
+
+This package uses the library MUMPS. If the MUMPS library is not installed in
+one of the directories of the standard path, the following variables should be
+set in the file "src/Makefile.inc":
+
+MUMPS_I=-I<path/to/MUMPS/include>
+MUMPS_L=-L<path/to/MUMPS/lib>
+
+INSTALLATION
+
+1) Install the package with the command 'R CMD INSTALL'
+   (type 'R CMD INSTALL -h' to see the available options. In particular the '-l'
+   option allows to specify where to install the package).
+2) In order for R to find the installed package it can be useful to create the 
+   file ".Renviron" in the home directory and to add the line
+        R_LIBS_USER=<path>
+   where <path> is the directory where the package is installed. 
