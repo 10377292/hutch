@@ -51,6 +51,55 @@ void MixedFERegression<InputHandler,Integrator,ORDER>::addDirichletBC()
 	A_.makeCompressed();
 }
 
+template<typename InputHandler, typename Integrator, UInt ORDER>
+void MixedFERegression<InputHandler,Integrator,ORDER>::setPsi(){
+
+	UInt nnodes = mesh_.num_nodes();
+	UInt nlocations = regressionData_.getNumberofObservations();
+
+	psi_.resize(nlocations, nnodes);
+	if (regressionData_.isLocationsByNodes()){
+
+		std::vector<coeff> tripletAll;
+		auto k = regressionData_.getObservationsIndices();
+		tripletAll.reserve(k.size());
+		for (int i = 0; i< k.size(); ++i){
+			tripletAll.push_back(coeff(i,k[i],1.0));
+		}
+		psi_.setFromTriplets(tripletAll.begin(),tripletAll.end());
+		psi_.makeCompressed();
+	}
+	else {
+		Triangle<ORDER*3> tri_activated;
+		Eigen::Matrix<Real,ORDER * 3,1> coefficients;
+
+		Real evaluator;
+
+		for(UInt i=0; i<nlocations;i++)
+		{
+			tri_activated = mesh_.findLocationNaive(regressionData_.getLocations()[i]);
+			if(tri_activated.getId() == Identifier::NVAL)
+			{
+				#ifdef R_VERSION_
+				Rprintf("ERROR: Point %d is not in the domain, remove point and re-perform smoothing\n", i+1);
+				#else
+				std::cout << "ERROR: Point " << i+1 <<" is not in the domain\n";
+				#endif
+			}else
+			{
+				for(UInt node = 0; node < ORDER*3 ; ++node)
+				{
+					coefficients = Eigen::Matrix<Real,ORDER * 3,1>::Zero();
+					coefficients(node) = 1; //Activates only current base
+					evaluator = evaluate_point<ORDER>(tri_activated, regressionData_.getLocations()[i], coefficients);
+					psi_.insert(i, tri_activated[node].getId()) = evaluator;
+				}
+			}
+		}
+
+		psi_.makeCompressed();
+	}
+}
 
 
 template<typename InputHandler, typename Integrator, UInt ORDER>
@@ -207,7 +256,7 @@ void MixedFERegression<InputHandler,Integrator,ORDER>::computeDegreesOfFreedomEx
 		}
 
 		MatrixXr X3 = X1 + lambda * R_;
-		Eigen::LLT<MatrixXr> Dsolver(X3);
+		Eigen::LDLT<MatrixXr> Dsolver(X3);
 
 		auto k = regressionData_.getObservationsIndices();
 
@@ -251,12 +300,15 @@ void MixedFERegression<InputHandler,Integrator,ORDER>::computeDegreesOfFreedomEx
 	_var[output_index] = 0;
 	
 	std::cout << "Time required for GCV computation" << std::endl;
-	clock.stop();
+	timespec time;
+	time = clock.stop();
+	_time[output_index]= (long long)time.tv_sec + (double)time.tv_nsec/1000000000;
 }
 
 template<typename InputHandler, typename Integrator, UInt ORDER>
 void MixedFERegression<InputHandler,Integrator,ORDER>::computeDegreesOfFreedomStochastic(UInt output_index, Real lambda)
-{
+{	
+	std::cout << " GCV computation " << std::endl;
 	timer clock1;
 	clock1.start();
 	UInt nnodes = mesh_.num_nodes();
@@ -294,6 +346,7 @@ void MixedFERegression<InputHandler,Integrator,ORDER>::computeDegreesOfFreedomSt
 	b.topRows(nnodes) = psi_.transpose()* LeftMultiplybyQ(u);
 
 	// Resolution of the system
+	//MatrixXr x = system_solve(b);
 	Eigen::SparseLU<SpMat> solver;
 	solver.compute(_coeffmatrix);
 	auto x = solver.solve(b);
@@ -350,29 +403,24 @@ void MixedFERegression<InputHandler,Integrator,ORDER>::smoothLaplace()
 
 	ETMass mass(EMass);
 	ETStiff stiff(EStiff);
-
-
-	setPsi();
+	
+ 	setPsi();
  	
- 
+ 	
  	if(!regressionData_.getCovariates().rows() == 0)
  	{
  		setH();
  		setQ();
  	}
  
-     if(!regressionData_.isLocationsByNodes())
-     {
-     	getDataMatrix(DMat_);
-     }
-     else
-     {
-     	getDataMatrixByIndices(DMat_);
-     }
-
-
-
-
+	if(!regressionData_.isLocationsByNodes())
+	{
+		getDataMatrix(DMat_);
+	}
+	else
+	{
+		getDataMatrixByIndices(DMat_);
+	}
 
 
 	Assembler::operKernel(stiff, mesh_, fe, R1_);
@@ -382,17 +430,6 @@ void MixedFERegression<InputHandler,Integrator,ORDER>::smoothLaplace()
 	getRightHandData(rightHandData);
 	_b = VectorXr::Zero(2*nnodes);
 	_b.topRows(nnodes)=rightHandData;
-
-	// timer clock;
-	// clock.start();
-	// Eigen::SparseLU<SpMat> solver;
- //  	solver.compute(R0_);
- //  	std::cout << "Factorized R0" << std:: endl;
- // 	MatrixXr X2 = solver.solve(R1_);
- //  	std::cout << "Inverted" << std:: endl;
- //  	MatrixXr X3 = R1_.transpose() * X2;
- //  	std::cout << "Creating R: time" << std::endl;
- //  	clock.stop();
 
 	_solution.resize(regressionData_.getLambda().size());
 	_dof.resize(regressionData_.getLambda().size());
@@ -406,11 +443,7 @@ void MixedFERegression<InputHandler,Integrator,ORDER>::smoothLaplace()
 		SpMat R1_lambda = (-lambda) * R1_;
 		SpMat R0_lambda = (-lambda)*R0_;
 		this->buildA(psi_, R1_lambda, R0_lambda);
-
-
 		this->buildCoeffMatrix(DMat_, R1_lambda, R0_lambda);
-
-
 
 		//Appling border conditions if necessary
 		if(regressionData_.getDirichletIndices().size() != 0)
@@ -430,10 +463,6 @@ void MixedFERegression<InputHandler,Integrator,ORDER>::smoothLaplace()
 		else
 			_dof[i] = -1;
 
-		//double ISE;
-		//auto f = _solution[i].segment(0,X3.rows());
-		//ISE = f.transpose()*X3*f;		
-		//std::cout << "asd The ISE for lambda = " << lambda << " is " << ISE << std::endl;
 	}
 
 }
@@ -715,13 +744,49 @@ MatrixXr MixedFERegression<InputHandler,Integrator,ORDER>::system_solve(const Ei
 }
 
 
-
-
-
-
-
-
-
+ template<typename InputHandler, typename Integrator, UInt ORDER>
+ void MixedFERegression<InputHandler,Integrator,ORDER>::setQ()
+ {
+ 	//std::cout<<"Computing Orthogonal Space Projection Matrix"<<std::endl;
+ 	Q_.resize(H_.rows(),H_.cols());
+ 	Q_ = -H_;
+ 	for (int i=0; i<H_.rows();++i)
+ 	{
+ 		Q_(i,i) += 1;
+ 	}
+ }
+ 
+ template<typename InputHandler, typename Integrator, UInt ORDER>
+ void MixedFERegression<InputHandler,Integrator,ORDER>::setH()
+ {
+ 	//std::cout<<"Computing Projection Matrix"<<std::endl;
+ 	//UInt nnodes = mesh_.num_nodes();
+ 	UInt nlocations = regressionData_.getNumberofObservations();
+ 
+ 	//regressionData_.printCovariates(std::cout);
+ 	MatrixXr W(this->regressionData_.getCovariates());
+ 	//std::cout<<"W "<< W <<std::endl;
+ 	//total number of mesh nodes
+ 	//UInt nnodes = mesh_.num_nodes();
+ 	if(regressionData_.isLocationsByNodes())
+ 	{
+ 		MatrixXr W_reduced(regressionData_.getNumberofObservations(), W.cols());
+ 		for (auto i=0; i<nlocations;++i)
+ 		{
+ 			auto index_i = regressionData_.getObservationsIndices()[i];
+ 			for (auto j=0; j<W.cols();++j)
+ 			{
+ 				W_reduced(i,j) = W(index_i,j);
+ 			}
+ 		}
+ 		W = W_reduced;
+ 	}
+ 
+ 
+ 	MatrixXr WTW(W.transpose()*W);
+ 
+ 	H_=W*WTW.ldlt().solve(W.transpose()); // using cholesky LDLT decomposition for computing hat matrix
+ }
 
 
 template<typename InputHandler, typename Integrator, UInt ORDER>
@@ -809,99 +874,6 @@ template<typename InputHandler, typename Integrator, UInt ORDER>
  				}
  			}
  		}
- }
- 
- template<typename InputHandler, typename Integrator, UInt ORDER>
- void MixedFERegression<InputHandler,Integrator,ORDER>::setPsi(){/////
- 
- 		//std::cout<<"Data Matrix Computation by Basis Evaluation.."<<std::endl;
- 		UInt nnodes = mesh_.num_nodes();
- 		UInt nlocations = regressionData_.getNumberofObservations();
- 		Real eps = 2.2204e-016,
- 			 tolerance = 100 * eps;
- 
- 		//cout<<"Nodes number "<<nnodes<<"Locations number "<<nlocations<<endl;
- 
- 		//std::vector<coeff> entries;
- 		//entries.resize((ORDER * 3)*nlocations);
- 
- 
- 		psi_.resize(nlocations, nnodes);
- 		//psi_.reserve(Eigen::VectorXi::Constant(nlocations,ORDER*3));
- 
- 		Triangle<ORDER*3> tri_activated;
- 		Eigen::Matrix<Real,ORDER * 3,1> coefficients;
- 
- 		Real evaluator;
- 
- 		for(UInt i=0; i<nlocations;i++)
- 		{
- 			tri_activated = mesh_.findLocationNaive(regressionData_.getLocations()[i]);
- 			if(tri_activated.getId() == Identifier::NVAL)
- 			{
- 				#ifdef R_VERSION_
- 				Rprintf("ERROR: Point %d is not in the domain, remove point and re-perform smoothing\n", i+1);
- 				#else
- 				std::cout << "ERROR: Point " << i+1 <<" is not in the domain\n";
- 				#endif
- 			}else
- 			{
- 				for(UInt node = 0; node < ORDER*3 ; ++node)
- 				{
- 					coefficients = Eigen::Matrix<Real,ORDER * 3,1>::Zero();
- 					coefficients(node) = 1; //Activates only current base
- 					evaluator = evaluate_point<ORDER>(tri_activated, regressionData_.getLocations()[i], coefficients);
- 					psi_.insert(i, tri_activated[node].getId()) = evaluator;
- 				}
- 			}
- 		}
- 
- 		psi_.prune(tolerance);
- 		psi_.makeCompressed();
- }
- 
- template<typename InputHandler, typename Integrator, UInt ORDER>
- void MixedFERegression<InputHandler,Integrator,ORDER>::setQ()
- {
- 	//std::cout<<"Computing Orthogonal Space Projection Matrix"<<std::endl;
- 	Q_.resize(H_.rows(),H_.cols());
- 	Q_ = -H_;
- 	for (int i=0; i<H_.rows();++i)
- 	{
- 		Q_(i,i) += 1;
- 	}
- }
- 
- template<typename InputHandler, typename Integrator, UInt ORDER>
- void MixedFERegression<InputHandler,Integrator,ORDER>::setH()
- {
- 	//std::cout<<"Computing Projection Matrix"<<std::endl;
- 	//UInt nnodes = mesh_.num_nodes();
- 	UInt nlocations = regressionData_.getNumberofObservations();
- 
- 	//regressionData_.printCovariates(std::cout);
- 	MatrixXr W(this->regressionData_.getCovariates());
- 	//std::cout<<"W "<< W <<std::endl;
- 	//total number of mesh nodes
- 	//UInt nnodes = mesh_.num_nodes();
- 	if(regressionData_.isLocationsByNodes())
- 	{
- 		MatrixXr W_reduced(regressionData_.getNumberofObservations(), W.cols());
- 		for (auto i=0; i<nlocations;++i)
- 		{
- 			auto index_i = regressionData_.getObservationsIndices()[i];
- 			for (auto j=0; j<W.cols();++j)
- 			{
- 				W_reduced(i,j) = W(index_i,j);
- 			}
- 		}
- 		W = W_reduced;
- 	}
- 
- 
- 	MatrixXr WTW(W.transpose()*W);
- 
- 	H_=W*WTW.ldlt().solve(W.transpose()); // using cholesky LDLT decomposition for computing hat matrix
  }
  
 
